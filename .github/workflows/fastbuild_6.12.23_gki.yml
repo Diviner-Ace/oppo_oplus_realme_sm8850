@@ -28,7 +28,7 @@ on:
         type: boolean
         default: 'true'
       nomount_enable:
-        description: '是否开启 Nomount 内核集成补丁'
+        description: '是否开启 Nomount 内核集成支持'
         required: true
         type: boolean
         default: 'true'
@@ -308,11 +308,13 @@ jobs:
             patch -p1 < 10_enable_susfs_for_ksu.patch || true
           fi
 
-      - name: 应用 Nomount 补丁
+      - name: 应用 Nomount 源码与补丁
         if: inputs.nomount_enable
         run: |
-          echo "正在添加 Nomount 集成补丁…"
+          echo "正在下载并部署 Nomount 源码文件与补丁…"
           cd kernel_workspace/common
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/nomount.c -O fs/nomount.c
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/nomount.h -O fs/nomount.h
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/nomount_6.12_kernel_integration.patch
           patch -p1 -F 3 < nomount_6.12_kernel_integration.patch || true
 
