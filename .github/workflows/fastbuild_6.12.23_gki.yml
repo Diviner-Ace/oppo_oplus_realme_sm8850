@@ -28,7 +28,7 @@ on:
         type: boolean
         default: 'true'
       nomount_enable:
-        description: '是否开启 NoMount 远程集成支持'
+        description: '是否开启 NoMount 支持(免挂载路径重定向与虚拟文件注入功能)'
         required: true
         type: boolean
         default: 'true'
@@ -315,7 +315,6 @@ jobs:
           cd kernel_workspace
           git clone --depth=1 https://github.com/maxsteeel/nomount.git nomount_repo
           
-          # 检查上游是否提供 setup.sh 自动化安装脚本
           if [ -f "./nomount_repo/kernel/setup.sh" ]; then
             echo "执行官方 kernel/setup.sh 安装脚本..."
             bash ./nomount_repo/kernel/setup.sh ./common
@@ -325,11 +324,9 @@ jobs:
           else
             echo "未找到 setup.sh，自动进行源码同步与 Makefile 挂钩..."
             mkdir -p ./common/fs/
-            # 兼容不同目录结构部署源文件
             find ./nomount_repo -name "nomount.c" -exec cp -f {} ./common/fs/ \;
             find ./nomount_repo -name "nomount.h" -exec cp -f {} ./common/fs/ \;
             
-            # 自动添加编译目标
             if ! grep -q "nomount.o" ./common/fs/Makefile; then
               echo 'obj-$(CONFIG_NOMOUNT) += nomount.o' >> ./common/fs/Makefile
             fi
@@ -338,7 +335,6 @@ jobs:
             fi
           fi
           
-          # 确保配置宏写入 defconfig
           echo "CONFIG_NOMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
 
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
@@ -633,7 +629,7 @@ jobs:
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump OBJSIZE=llvm-size STRIP=llvm-strip
           source "./_setup_env.sh" 2>/dev/null || true
           
-          sudo rm -rf /usr/share_dotnet &
+          sudo rm -rf /usr/share/dotnet &
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
