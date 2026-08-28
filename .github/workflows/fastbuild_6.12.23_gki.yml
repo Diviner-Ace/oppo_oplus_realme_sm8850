@@ -28,7 +28,7 @@ on:
         type: boolean
         default: 'true'
       nomount_enable:
-        description: '是否开启 Nomount 内核集成支持'
+        description: '是否开启 NoMount 远程集成支持'
         required: true
         type: boolean
         default: 'true'
@@ -128,7 +128,7 @@ jobs:
           
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/ccache-x86-64 -O ccache &&
           sudo cp -f ./ccache /usr/bin/ccache &&
-          sudo chmod +x /usr/bin/ccache &&
+          sudo chmod +x ./ccache &&
           rm -f ./ccache &
           
           echo "正在克隆源码仓库..."
@@ -308,15 +308,38 @@ jobs:
             patch -p1 < 10_enable_susfs_for_ksu.patch || true
           fi
 
-      - name: 应用 Nomount 源码与补丁
+      - name: 远程拉取并集成 NoMount
         if: inputs.nomount_enable
         run: |
-          echo "正在下载并部署 Nomount 源码文件与补丁…"
-          cd kernel_workspace/common
-          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/nomount.c -O fs/nomount.c
-          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/nomount.h -O fs/nomount.h
-          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/nomount_6.12_kernel_integration.patch
-          patch -p1 -F 3 < nomount_6.12_kernel_integration.patch || true
+          echo "正在从 maxsteeel/nomount 远程克隆最新源码..."
+          cd kernel_workspace
+          git clone --depth=1 https://github.com/maxsteeel/nomount.git nomount_repo
+          
+          # 检查上游是否提供 setup.sh 自动化安装脚本
+          if [ -f "./nomount_repo/kernel/setup.sh" ]; then
+            echo "执行官方 kernel/setup.sh 安装脚本..."
+            bash ./nomount_repo/kernel/setup.sh ./common
+          elif [ -f "./nomount_repo/setup.sh" ]; then
+            echo "执行官方 setup.sh 安装脚本..."
+            bash ./nomount_repo/setup.sh ./common
+          else
+            echo "未找到 setup.sh，自动进行源码同步与 Makefile 挂钩..."
+            mkdir -p ./common/fs/
+            # 兼容不同目录结构部署源文件
+            find ./nomount_repo -name "nomount.c" -exec cp -f {} ./common/fs/ \;
+            find ./nomount_repo -name "nomount.h" -exec cp -f {} ./common/fs/ \;
+            
+            # 自动添加编译目标
+            if ! grep -q "nomount.o" ./common/fs/Makefile; then
+              echo 'obj-$(CONFIG_NOMOUNT) += nomount.o' >> ./common/fs/Makefile
+            fi
+            if ! grep -q "CONFIG_NOMOUNT" ./common/fs/Kconfig; then
+              sed -i '$i config NOMOUNT\n\tbool "NoMount Path Redirection Subsystem"\n\tdefault y\n' ./common/fs/Kconfig
+            fi
+          fi
+          
+          # 确保配置宏写入 defconfig
+          echo "CONFIG_NOMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
 
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         if: inputs.lz4_enable
@@ -610,7 +633,7 @@ jobs:
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump OBJSIZE=llvm-size STRIP=llvm-strip
           source "./_setup_env.sh" 2>/dev/null || true
           
-          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/share_dotnet &
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
@@ -793,7 +816,7 @@ jobs:
           - 机型：欧加真骁龙8E Gen5通用 ${{ env.KERNEL_VERSION }}.${{ env.SUB_VERSION }} 内核（基于 AOSP 官方 android16-6.12-2025-06 源码分支）
           - KSU分支：${{ env.KSU_TYPENAME }}
           - susfs支持：${{ github.event.inputs.susfs_enable }}
-          - Nomount支持：${{ github.event.inputs.nomount_enable }}
+          - NoMount支持：${{ github.event.inputs.nomount_enable }}
           - KPM支持 ：${{ github.event.inputs.kpm_enable }}
           - LZ4支持：${{ github.event.inputs.lz4_enable }}
           - LZ4KD支持：${{ github.event.inputs.lz4kd_enable }}
@@ -810,6 +833,7 @@ jobs:
           
           ### ⏫️ 更新内容：
           - 更新${{ env.KSU_TYPENAME }}至最新版本（${{ needs.build.outputs.ksuver }}）
+          - 集成最新 NoMount 源码支持
           - (预留)
           
           ### 📋 安装方法 | Installation Guide
