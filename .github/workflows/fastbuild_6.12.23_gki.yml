@@ -126,10 +126,12 @@ jobs:
           sudo apt update &&
           sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev libdw-dev &
           
-          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/ccache-x86-64 -O ccache &&
-          sudo cp -f ./ccache /usr/bin/ccache &&
-          sudo chmod +x ./ccache &&
-          rm -f ./ccache &
+          # 同步下载并配置 ccache 二进制与执行权限
+          if wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/ccache-x86-64 -O ccache; then
+            sudo cp -f ./ccache /usr/bin/ccache
+            sudo chmod 755 /usr/bin/ccache
+            rm -f ./ccache
+          fi
           
           echo "正在克隆源码仓库..."
           aria2c -s16 -x16 -k1M https://github.com/cctv18/android_gki_kernel_common/archive/refs/heads/android16-6.12-2025-06.zip -o common.zip && 
@@ -150,8 +152,9 @@ jobs:
           rm -rf rust.zip &
           
           echo "正在克隆构建工具..." &&
+          mkdir -p build-tools &&
           aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang19-r536225/build-tools.zip -o build-tools.zip &&
-          unzip -q build-tools.zip &&
+          unzip -q build-tools.zip -d build-tools &&
           rm -rf build-tools.zip &
           
           wait
@@ -226,6 +229,7 @@ jobs:
       
       - name: 初始化并配置ccache
         run: |
+          sudo chmod 755 /usr/bin/ccache 2>/dev/null || true
           export CCACHE_COMPILERCHECK="none"
           export CCACHE_BASEDIR="${{ github.workspace }}"
           export CCACHE_NOHASHDIR="true"
