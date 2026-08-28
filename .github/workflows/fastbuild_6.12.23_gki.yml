@@ -126,7 +126,6 @@ jobs:
           sudo apt update &&
           sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev libdw-dev &
           
-          # 同步下载并配置 ccache 二进制与执行权限
           if wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/ccache-x86-64 -O ccache; then
             sudo cp -f ./ccache /usr/bin/ccache
             sudo chmod 755 /usr/bin/ccache
@@ -319,27 +318,28 @@ jobs:
           cd kernel_workspace
           git clone --depth=1 https://github.com/maxsteeel/nomount.git nomount_repo
           
-          if [ -f "./nomount_repo/kernel/setup.sh" ]; then
+          cd ./common
+          if [ -f "../nomount_repo/kernel/setup.sh" ]; then
             echo "执行官方 kernel/setup.sh 安装脚本..."
-            bash ./nomount_repo/kernel/setup.sh ./common
-          elif [ -f "./nomount_repo/setup.sh" ]; then
+            bash ../nomount_repo/kernel/setup.sh master || bash ../nomount_repo/kernel/setup.sh main || bash ../nomount_repo/kernel/setup.sh || true
+          elif [ -f "../nomount_repo/setup.sh" ]; then
             echo "执行官方 setup.sh 安装脚本..."
-            bash ./nomount_repo/setup.sh ./common
+            bash ../nomount_repo/setup.sh master || bash ../nomount_repo/setup.sh main || bash ../nomount_repo/setup.sh || true
           else
             echo "未找到 setup.sh，自动进行源码同步与 Makefile 挂钩..."
-            mkdir -p ./common/fs/
-            find ./nomount_repo -name "nomount.c" -exec cp -f {} ./common/fs/ \;
-            find ./nomount_repo -name "nomount.h" -exec cp -f {} ./common/fs/ \;
+            mkdir -p ./fs/
+            find ../nomount_repo -name "nomount.c" -exec cp -f {} ./fs/ \;
+            find ../nomount_repo -name "nomount.h" -exec cp -f {} ./fs/ \;
             
-            if ! grep -q "nomount.o" ./common/fs/Makefile; then
-              echo 'obj-$(CONFIG_NOMOUNT) += nomount.o' >> ./common/fs/Makefile
+            if ! grep -q "nomount.o" ./fs/Makefile; then
+              echo 'obj-$(CONFIG_NOMOUNT) += nomount.o' >> ./fs/Makefile
             fi
-            if ! grep -q "CONFIG_NOMOUNT" ./common/fs/Kconfig; then
-              sed -i '$i config NOMOUNT\n\tbool "NoMount Path Redirection Subsystem"\n\tdefault y\n' ./common/fs/Kconfig
+            if ! grep -q "CONFIG_NOMOUNT" ./fs/Kconfig; then
+              sed -i '$i config NOMOUNT\n\tbool "NoMount Path Redirection Subsystem"\n\tdefault y\n' ./fs/Kconfig
             fi
           fi
           
-          echo "CONFIG_NOMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NOMOUNT=y" >> ./arch/arm64/configs/gki_defconfig
 
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         if: inputs.lz4_enable
