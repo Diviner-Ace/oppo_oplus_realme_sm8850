@@ -91,7 +91,7 @@ on:
         type: boolean
         default: 'false'
       kernel_suffix:
-        description: '内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)'
+        description: '自定义版本名(可填入：6.12.23-android16-5-g75e9b1c7ae7c-abogki463945075-4k，脚本会自动剥离6.12.23-前缀)'
         required: false
         type: string
         default: ''
@@ -545,11 +545,15 @@ jobs:
           cd kernel_workspace
           echo "替换内核版本后缀..."
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            echo "当前内核版本后缀：${{ github.event.inputs.kernel_suffix }}"
+            RAW_VERSION="${{ github.event.inputs.kernel_suffix }}"
+            # 【修改点1】：智能剥离可能存在的 "6.12.23-" 前缀，避免出现 6.12.23-6.12.23-xxx 的情况
+            CUSTOM_SUFFIX=$(echo "$RAW_VERSION" | sed 's/^6\.12\.23-//')
+            echo "原始输入：$RAW_VERSION"
+            echo "实际使用的后缀：$CUSTOM_SUFFIX"
             for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
+              sed -i "\$s|echo \"\\\$res\"|echo \"-${CUSTOM_SUFFIX}\"|" "$f"
             done
-            sudo sed -i 's/-4k/-${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+            sudo sed -i "s/-4k/-${CUSTOM_SUFFIX}/g" ./common/arch/arm64/configs/gki_defconfig
           else
             echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
             for f in ./common/scripts/setlocalversion; do
@@ -593,10 +597,15 @@ jobs:
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfakestat.so
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfaketimeMT.so
           chmod 777 ./*.so
-          export FAKESTAT="2025-05-25 12:00:00"
-          export FAKETIME="@2025-05-25 13:00:00"
+          
+          # 【修改点2】：修改了时间劫持的参数，并加入 KBUILD_BUILD_TIMESTAMP 强制覆盖内核版本显示时间
+          export FAKESTAT="2025-11-27 08:45:40"
+          export FAKETIME="@2025-11-27 08:45:40"
+          export KBUILD_BUILD_TIMESTAMP="Thu Nov 27 08:45:40 UTC 2025"
           echo "FAKESTAT=$FAKESTAT" >> $GITHUB_ENV
           echo "FAKETIME=$FAKETIME" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP" >> $GITHUB_ENV
+          
           SO_DIR=$(pwd)
           export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
           export REAL_CLANG_PATH="$WORKDIR/kernel_workspace/clang19/bin/clang"
