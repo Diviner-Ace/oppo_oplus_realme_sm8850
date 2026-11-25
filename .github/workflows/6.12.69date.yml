@@ -571,12 +571,13 @@ jobs:
           echo "预期完整内核版本号：${BASE_KVER}-${FINAL_SUFFIX}"
           echo "BASE_KVER=$BASE_KVER" >> $GITHUB_ENV
           echo "FINAL_SUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
-          for f in ./common/scripts/setlocalversion; do
-            sed -i "\$s|echo \"\\\$res\"|echo \"-${FINAL_SUFFIX}\"|" "$f"
-          done
-          sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' ./common/arch/arm64/configs/gki_defconfig
+          # Linux 6.12 直接通过 CONFIG_LOCALVERSION 写入内核后缀
+          sed -i '/^CONFIG_LOCALVERSION=/d' ./common/arch/arm64/configs/gki_defconfig
+          sed -i '/^# CONFIG_LOCALVERSION is not set/d' ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LOCALVERSION=\"-${FINAL_SUFFIX}\"" >> ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+
            
       - name: 构建内核
         id: build_kernel
