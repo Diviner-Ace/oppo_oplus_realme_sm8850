@@ -1,4 +1,4 @@
-name: (新版米/通用GKI日期) 6.12.69 GKI内核
+name: (新版米/通用GKI) 6.12.69 GKI内核快速构建
 
 env:
   TZ: Asia/Shanghai
@@ -91,12 +91,12 @@ on:
         type: boolean
         default: 'false'
       kernel_suffix:
-        description: '内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)'
+        description: '内核版本号/后缀(留空默认;可直接填完整版本号如 6.12.69-android16-6-...-4k，也可仅填后缀)'
         required: false
         type: string
         default: ''
       kernel_build_date:
-        description: '自定义构建日期(留空默认当前时间;支持如 2026-03-10 12:00:00 或标准格式 Tue Mar 10 12:00:00 UTC 2026)'
+        description: '内核构建日期(留空默认;可直接填完整内容如 #1 SMP PREEMPT Tue Sep 8 15:08:49 UTC 2026，也可仅填日期)'
         required: false
         type: string
         default: ''
@@ -107,6 +107,7 @@ jobs:
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
       ak3name: ${{ steps.create_zip.outputs.ak3name }}
+      full_version: ${{ steps.build_kernel.outputs.full_version }}
       build_date: ${{ steps.build_kernel.outputs.build_date }}
     permissions:
       actions: write
@@ -547,22 +548,33 @@ jobs:
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
 
       - name: 添加制作名称
+        env:
+          INPUT_KERNEL_SUFFIX: ${{ github.event.inputs.kernel_suffix }}
         run: |
           cd kernel_workspace
+          # 从源码 Makefile 自动获取基础内核版本（如 6.12.69）
+          BASE_KVER="$(awk -F= '/^VERSION[[:space:]]*=/{v=$2} /^PATCHLEVEL[[:space:]]*=/{p=$2} /^SUBLEVEL[[:space:]]*=/{s=$2} END{gsub(/[[:space:]]/,"",v); gsub(/[[:space:]]/,"",p); gsub(/[[:space:]]/,"",s); print v"."p"."s}' ./common/Makefile)"
+          echo "源码基础内核版本：$BASE_KVER"
           echo "替换内核版本后缀..."
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            echo "当前内核版本后缀：${{ github.event.inputs.kernel_suffix }}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
-            done
-            sudo sed -i 's/-4k/-${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+          if [[ -n "$INPUT_KERNEL_SUFFIX" ]]; then
+            CLEAN_INPUT="$(echo "$INPUT_KERNEL_SUFFIX" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+            # 如果输入了完整版本号（以 6.12.69- 开头），自动剥离前缀避免重复拼接
+            if [[ "$CLEAN_INPUT" == "${BASE_KVER}-"* ]]; then
+              FINAL_SUFFIX="${CLEAN_INPUT#${BASE_KVER}-}"
+            else
+              FINAL_SUFFIX="${CLEAN_INPUT#-}"
+            fi
           else
-            echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ env.KERNEL_NAME }}\"|" "$f"
-            done
-            sudo sed -i 's/-4k/-${{ env.KERNEL_NAME }}/g' ./common/arch/arm64/configs/gki_defconfig
+            FINAL_SUFFIX="${{ env.KERNEL_NAME }}"
           fi
+          echo "实际应用内核后缀：$FINAL_SUFFIX"
+          echo "预期完整内核版本号：${BASE_KVER}-${FINAL_SUFFIX}"
+          echo "BASE_KVER=$BASE_KVER" >> $GITHUB_ENV
+          echo "FINAL_SUFFIX=$FINAL_SUFFIX" >> $GITHUB_ENV
+          for f in ./common/scripts/setlocalversion; do
+            sed -i "\$s|echo \"\\\$res\"|echo \"-${FINAL_SUFFIX}\"|" "$f"
+          done
+          sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
            
@@ -673,25 +685,32 @@ jobs:
           # 5. 编译前运行官方环境配置脚本
           source "./_setup_env.sh" 2>/dev/null || true
 
-          # 6. 设置自定义内核构建日期 (KBUILD_BUILD_TIMESTAMP)，控制内核版本时间戳且不影响 ccache 命中
+          # 6. 设置自定义内核构建日期 (KBUILD_BUILD_TIMESTAMP / KBUILD_BUILD_VERSION)，不影响 ccache 命中
           if [[ -n "$KERNEL_BUILD_DATE" ]]; then
-            if [[ "$KERNEL_BUILD_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([[:space:]]+[0-9]{2}:[0-9]{2}(:[0-9]{2})?)?$ ]]; then
-              PARSED_DATE="$(LC_ALL=C TZ=UTC date -d "$KERNEL_BUILD_DATE" +'%a %b %e %H:%M:%S UTC %Y' 2>/dev/null || true)"
+            RAW_DATE="$(echo "$KERNEL_BUILD_DATE" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+            # 如果包含 #1 / #2 等构建序号前缀，提取为 KBUILD_BUILD_VERSION
+            if [[ "$RAW_DATE" =~ ^#([0-9]+)[[:space:]]+(.*)$ ]]; then
+              export KBUILD_BUILD_VERSION="${BASH_REMATCH[1]}"
+              RAW_DATE="${BASH_REMATCH[2]}"
+            fi
+            # 自动剥离内核编译脚本会自动拼接的 SMP / PREEMPT 等标记，防止重复出现
+            RAW_DATE="$(echo "$RAW_DATE" | sed -E 's/^((SMP|PREEMPT|PREEMPT_RT|PREEMPT_DYNAMIC)[[:space:]]+)+//')"
+            # 简写日期（如 2026-09-08 15:08:49）自动转为标准 UTC 格式，完整格式按原样保留
+            if [[ "$RAW_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([[:space:]]+[0-9]{2}:[0-9]{2}(:[0-9]{2})?)?$ ]]; then
+              PARSED_DATE="$(LC_ALL=C TZ=UTC date -d "$RAW_DATE" +'%a %b %e %H:%M:%S UTC %Y' 2>/dev/null || true)"
               if [[ -n "$PARSED_DATE" ]]; then
                 export KBUILD_BUILD_TIMESTAMP="$PARSED_DATE"
               else
-                export KBUILD_BUILD_TIMESTAMP="$KERNEL_BUILD_DATE"
+                export KBUILD_BUILD_TIMESTAMP="$RAW_DATE"
               fi
             else
-              export KBUILD_BUILD_TIMESTAMP="$KERNEL_BUILD_DATE"
+              export KBUILD_BUILD_TIMESTAMP="$RAW_DATE"
             fi
-            echo "已启用自定义内核构建日期 (KBUILD_BUILD_TIMESTAMP): $KBUILD_BUILD_TIMESTAMP"
-            echo "CUSTOM_BUILD_DATE=$KBUILD_BUILD_TIMESTAMP" >> $GITHUB_ENV
-            echo "build_date=$KBUILD_BUILD_TIMESTAMP" >> $GITHUB_OUTPUT
+            echo "已启用自定义内核构建信息:"
+            echo "  KBUILD_BUILD_VERSION=${KBUILD_BUILD_VERSION:-1}"
+            echo "  KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
           else
             echo "未设置自定义构建日期，使用默认编译时间"
-            echo "CUSTOM_BUILD_DATE=默认(实时编译时间)" >> $GITHUB_ENV
-            echo "build_date=默认(实时编译时间)" >> $GITHUB_OUTPUT
           fi
           
           #在构建内核的同时清除不必要的.NET, Android NDK, Haskell, CodeQL运行库，清理空间且不阻塞后续步骤运行
@@ -703,11 +722,23 @@ jobs:
           export CC="$(pwd)/cc-wrapper" && export LD="$(pwd)/ld-wrapper" &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" OBJCOPY="llvm-objcopy" O=out Image
           
-          # 打印实际写入内核的版本时间戳信息，方便核对
+          # 读取并打印实际写入内核的版本号和构建日期，并同步给后续打包与发布步骤
+          if [[ -f ./out/include/generated/utsrelease.h ]]; then
+            echo "--- 实际写入内核的 UTS_RELEASE ---"
+            cat ./out/include/generated/utsrelease.h
+            ACTUAL_UTS_RELEASE="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' ./out/include/generated/utsrelease.h)"
+          fi
           if [[ -f ./out/include/generated/utsversion.h ]]; then
             echo "--- 实际写入内核的 UTS_VERSION ---"
             cat ./out/include/generated/utsversion.h
+            ACTUAL_UTS_VERSION="$(sed -n 's/^#define UTS_VERSION "\(.*\)"$/\1/p' ./out/include/generated/utsversion.h)"
           fi
+          ACTUAL_UTS_RELEASE="${ACTUAL_UTS_RELEASE:-${BASE_KVER}-${FINAL_SUFFIX}}"
+          ACTUAL_UTS_VERSION="${ACTUAL_UTS_VERSION:-${KBUILD_BUILD_TIMESTAMP:-默认(实时编译时间)}}"
+          echo "ACTUAL_UTS_RELEASE=$ACTUAL_UTS_RELEASE" >> $GITHUB_ENV
+          echo "ACTUAL_UTS_VERSION=$ACTUAL_UTS_VERSION" >> $GITHUB_ENV
+          echo "full_version=$ACTUAL_UTS_RELEASE" >> $GITHUB_OUTPUT
+          echo "build_date=$ACTUAL_UTS_VERSION" >> $GITHUB_OUTPUT
 
           # 编译后时间劫持二次校验
           echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
@@ -774,22 +805,11 @@ jobs:
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            AK3_NAME=AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_${{ github.event.inputs.kernel_suffix }}.zip
-          else
-            AK3_NAME=AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_${{ env.KERNEL_NAME }}.zip
-          fi
-          zip -r ../$AK3_NAME ./*
+          AK3_NAME="AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_${FINAL_SUFFIX}.zip"
+          zip -r "../$AK3_NAME" ./*
           echo "ak3name=$AK3_NAME" >> $GITHUB_OUTPUT
           
           #为AK3添加注释（调试信息）
-          CLEAN_SUB_VERSION="${{ env.SUB_VERSION }}"
-          CLEAN_SUB_VERSION="${CLEAN_SUB_VERSION%_mtk}"
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            FULL_VERSION=${{ env.KERNEL_VERSION }}.${CLEAN_SUB_VERSION}-${{ github.event.inputs.kernel_suffix }}
-          else
-            FULL_VERSION=${{ env.KERNEL_VERSION }}.${CLEAN_SUB_VERSION}-${{ env.KERNEL_NAME }}
-          fi
           TIME_NOW="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
           echo "Author: $GITHUB_ACTOR" > ./ak3.log
           echo "Repo: $GITHUB_REPOSITORY" >> ./ak3.log
@@ -797,8 +817,8 @@ jobs:
           echo "Run ID: $GITHUB_RUN_ID" >> ./ak3.log
           echo "Commit: $GITHUB_SHA" >> ./ak3.log
           echo "Time: $TIME_NOW" >> ./ak3.log
-          echo "Build Date: $CUSTOM_BUILD_DATE" >> ./ak3.log
-          echo "Kernel Ver: $FULL_VERSION" >> ./ak3.log
+          echo "Build Date: $ACTUAL_UTS_VERSION" >> ./ak3.log
+          echo "Kernel Ver: $ACTUAL_UTS_RELEASE" >> ./ak3.log
           echo "KSU Branch: ${KSU_TYPENAME}" >> ./ak3.log
           echo "KSU Ver: ${KSUVER}" >> ./ak3.log
           echo "susfs: ${{ github.event.inputs.susfs_enable }}" >> ./ak3.log
@@ -811,7 +831,7 @@ jobs:
           echo "ADIOS: ${{ github.event.inputs.adios_enable }}" >> ./ak3.log
           echo "Re-Kernel: ${{ github.event.inputs.rekernel_enable }}" >> ./ak3.log
           echo "BBG: ${{ github.event.inputs.baseband_guard }}" >> ./ak3.log
-          zip -z ../$AK3_NAME < ./ak3.log
+          zip -z "../$AK3_NAME" < ./ak3.log
 
       - name: 上传 Ccache 调试日志
         if: always() && inputs.ccache_debug
@@ -844,17 +864,9 @@ jobs:
 
       - name: 设置环境变量
         run: |
-          CLEAN_SUB_VERSION="${{ env.SUB_VERSION }}"
-          CLEAN_SUB_VERSION="${CLEAN_SUB_VERSION%_mtk}"
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            FULL_VERSION=${{ env.KERNEL_VERSION }}.${CLEAN_SUB_VERSION}-${{ github.event.inputs.kernel_suffix }}
-            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-            export FULL_VERSION=$FULL_VERSION
-          else
-            FULL_VERSION=${{ env.KERNEL_VERSION }}.${CLEAN_SUB_VERSION}-${{ env.KERNEL_NAME }}
-            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
-            export FULL_VERSION=$FULL_VERSION
-          fi
+          FULL_VERSION="${{ needs.build.outputs.full_version }}"
+          echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+          export FULL_VERSION="$FULL_VERSION"
           TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
           TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
           echo "TIME=$TIME" >> $GITHUB_ENV
@@ -881,8 +893,8 @@ jobs:
         run: |
           cat << 'EOF' > release_notes.md
           ### 📱 米系/其他 GKI 机型 ${{ env.KSU_TYPENAME }} sm8850 通用内核 | 构建信息
-          - 内核版本号: ${{ env.FULL_VERSION }}
-          - 内核构建日期: ${{ needs.build.outputs.build_date }}
+          - 内核版本号: `${{ env.FULL_VERSION }}`
+          - 内核构建日期: `${{ needs.build.outputs.build_date }}`
           - 编译时间: ${{ env.TIME_FORM }}
           - 机型：欧加真骁龙8E Gen5通用 ${{ env.KERNEL_VERSION }}.${{ env.SUB_VERSION }} 内核（基于 AOSP 官方 android16-6.12-2026-03 源码分支）
           - KSU分支：${{ env.KSU_TYPENAME }}
